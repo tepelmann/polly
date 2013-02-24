@@ -37,6 +37,11 @@ ScopsShowSource("dot-scops-source",
             cl::desc("Print source code inside the nodes of the scop graph"),
             cl::Hidden, cl::init(false));
 
+static cl::opt<std::string>
+ScopsShowProfilingData("dot-scops-profiling-data",
+                       cl::desc("Print the profiling data in the file inside the nodes of the scop graph"),
+                       cl::Hidden, cl::init(""));
+
 namespace llvm {
   template <> struct GraphTraits<ScopDetection*>
     : public GraphTraits<RegionInfo*> {
@@ -144,6 +149,41 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
     stream.seekg(length);
   }
   
+  // Get the percentage of profiling samples that hit the basic block.
+  // The file with the profiling data looks like this:
+  // Percentage | FileName | LineNumber
+  // 23.42 main.cc 123
+  static float getNodeProfilingPercentage(std::string& filePathProfilingData, std::string& fileName, int bbBegin, int bbEnd) {
+    std::ifstream ProfilingData(filePathProfilingData.c_str());
+    if (ProfilingData.is_open())
+    {
+        float percentBasicBlock = 0.0;
+        for (int nr = bbBegin; nr <= bbEnd; nr++)
+        {
+            std::stringstream searchPattern;
+            searchPattern << fileName << " " << nr;
+            std::string line;
+            size_t foundIdx = std::string::npos;
+            getline(ProfilingData, line);
+            do
+            {
+                foundIdx = line.find(searchPattern.str());
+            }while(foundIdx == std::string::npos && getline(ProfilingData, line));
+            if (foundIdx != std::string::npos)
+            {
+                float percentCodeLine;
+                std::stringstream ssLine(line);
+                ssLine >> percentCodeLine;
+                percentBasicBlock += percentCodeLine;
+            }
+            ProfilingData.clear();
+            ProfilingData.seekg(0);
+        }
+        return percentBasicBlock;
+    }
+    return 0.0;
+  }
+
   std::string getNodeLabel(RegionNode *Node, ScopDetection *SD) {
     std::stringstream label;
     bool Profiling = ScopsShowProfilingData.hasArgStr();
@@ -153,6 +193,19 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
         unsigned begin, end;
         std::stringstream filePathSrc, filePathProfilingData;
         getDebugLocation(Node->getEntry(), begin, end, fileName, dir);
+
+        if (Profiling)
+        {
+            //filePathProfilingData << ScopsShowProfilingData; // "/home/jan/Dropbox/diplomarbeit/algo1-isaft/Implementierung/perfAnnotatedSummery.txt";
+            if (begin != -1)
+            {
+                float percentage = getNodeProfilingPercentage(ScopsShowProfilingData, fileName, begin, end);
+                if (percentage > 0) {
+                    label << percentage;
+                    label << "\\|";
+                }
+            }
+        }
 
         if (ScopsShowSource)
         {
@@ -179,6 +232,24 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
     return label.str();
   }
 
+  static std::string getNodeAttributes(RegionNode *Node, ScopDetection *SD){
+    std::stringstream attr;
+    bool Profiling = ScopsShowProfilingData.hasArgStr();
+    if (Profiling)
+    {
+        std::string fileName, dir;
+        unsigned begin, end;
+        std::stringstream filePathProfilingData;
+        getDebugLocation(Node->getEntry(), begin, end, fileName, dir);
+        //filePathProfilingData << ScopsShowProfilingData;//"/home/jan/Dropbox/diplomarbeit/algo1-isaft/Implementierung/perfAnnotatedSummery.txt";
+        if (begin != -1)
+        {
+            float percentage = getNodeProfilingPercentage(ScopsShowProfilingData, fileName, begin, end);
+            attr << "fillcolor=\"" << "0 " << (percentage / 100) << " 1\"";
+            return attr.str();
+        }
+    }
+    return "fillcolor=white";
   }
 
   static std::string escapeString(std::string String) {
