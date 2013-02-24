@@ -17,12 +17,25 @@
 #include "polly/LinkAllPasses.h"
 #include "polly/ScopDetection.h"
 
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <sstream>
+#include "llvm/DebugInfo.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/raw_ostream.h"
+
 #include "llvm/Analysis/DOTGraphTraitsPass.h"
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/RegionIterator.h"
 
 using namespace polly;
 using namespace llvm;
+
+static cl::opt<bool>
+ScopsShowSource("dot-scops-source",
+            cl::desc("Print source code inside the nodes of the scop graph"),
+            cl::Hidden, cl::init(false));
 
 namespace llvm {
   template <> struct GraphTraits<ScopDetection*>
@@ -97,9 +110,75 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
     return "";
   }
 
+  // Gets the start and endline of the basic block in the original source file.
+  static void getDebugLocation(BasicBlock *BB, unsigned &LineBegin, unsigned &LineEnd, std::string &FileName, std::string &Dir) {
+    LineBegin = -1;
+    LineEnd = 0;
+    for (BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
+      DebugLoc DL = BI->getDebugLoc();
+      if (DL.isUnknown())
+        continue;
+
+      DIScope Scope(DL.getScope(BI->getContext()));
+
+      FileName = Scope.getFilename();
+      Dir = Scope.getDirectory();
+
+      unsigned NewLine = DL.getLine();
+
+      LineBegin = std::min(LineBegin, NewLine);
+      LineEnd = std::max(LineEnd, NewLine);
+    }
+  }
+
+  static void gotoFileLine(std::ifstream& stream, unsigned lineNumber) {
+    std::string s;
+    long length;
+
+    stream.seekg (0, std::ios::beg); // go to the first line
+
+    for (int i=1; (i<lineNumber && stream.good()); i++) // loop till the desired line
+        getline(stream, s);
+
+    length = stream.tellg(); // tell the first position at the line
+    stream.seekg(length);
+  }
+  
   std::string getNodeLabel(RegionNode *Node, ScopDetection *SD) {
-    return DOTGraphTraits<RegionNode*>
-      ::getNodeLabel(Node, SD->getRI()->getTopLevelRegion());
+    std::stringstream label;
+    bool Profiling = ScopsShowProfilingData.hasArgStr();
+    if (ScopsShowSource)
+    {
+        std::string fileName, dir;
+        unsigned begin, end;
+        std::stringstream filePathSrc, filePathProfilingData;
+        getDebugLocation(Node->getEntry(), begin, end, fileName, dir);
+
+        if (ScopsShowSource)
+        {
+            filePathSrc << dir << "/" << fileName;
+            if (begin == -1) label << "source file not found! \n";
+            std::ifstream SourceFile(filePathSrc.str().c_str());
+            if (SourceFile.is_open()) {
+                gotoFileLine(SourceFile, begin);
+                for (int i=begin; i<=end; i++){
+                    std::string line;
+                    getline(SourceFile, line);
+                    label << (line) << "\\\l";
+                }
+                SourceFile.close();
+            }else{
+                label << "could not open source file '" << filePathSrc.str().c_str() << "'";
+            }
+
+            // place a horizontal line between the original source code and the llvm-ir
+            label << "\\|";
+        }
+    }
+    label << DOTGraphTraits<RegionNode*>::getNodeLabel(Node, SD->getRI()->getTopLevelRegion());
+    return label.str();
+  }
+
   }
 
   static std::string escapeString(std::string String) {
