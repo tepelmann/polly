@@ -49,6 +49,9 @@
 
 #include "llvm/Pass.h"
 #include "llvm/Analysis/AliasSetTracker.h"
+#include "polly/Support/DebugLocationHelper.h"
+
+#include <sstream>
 
 #include <set>
 #include <map>
@@ -71,6 +74,19 @@ namespace llvm {
 
 namespace polly {
 typedef std::set<const SCEV*> ParamSetType;
+
+enum BadScopReason{
+    CFG,
+    IndVar,
+    LoopBound,
+    FuncCall,
+    AffFunc,
+    Scalar,
+    Alias,
+    SimpleRegion,
+    Other,
+    TopLevelInvalid
+};
 
 //===----------------------------------------------------------------------===//
 /// @brief Pass to detect the maximal static control parts (Scops) of a
@@ -105,6 +121,21 @@ class ScopDetection : public FunctionPass {
 
   // Invalid regions and the reason they fail.
   std::map<const Region*, std::string> InvalidRegions;
+  
+  struct ScopError {
+    BadScopReason ErrorId;
+    std::string Message;
+    std::vector<CodePos>* ErrorPositions;
+    ScopError(BadScopReason reason, std::string message, 
+              std::vector<CodePos>* errorPositions)
+      : ErrorId(reason), Message(message), ErrorPositions(errorPositions)
+      {}
+  };
+  
+  // All found errors per region
+  std::map<const Region*, std::vector<ScopError> > InvalidRegionsErrors;
+  mutable std::vector<ScopError> ScopErrors;
+  mutable ScopError* LastScopError;
 
   // Remember the invalid functions producted by backends;
   typedef std::set<const Function*> FunctionSet;
@@ -204,17 +235,32 @@ class ScopDetection : public FunctionPass {
   /// @return True if the function is not an OpenMP subfunction.
   bool isValidFunction(llvm::Function &F);
 
-  /// @brief Get the location of a region from the debug info.
-  ///
-  /// @param R The region to get debug info for.
-  /// @param LineBegin The first line in the region.
-  /// @param LineEnd The last line in the region.
-  /// @param FileName The filename where the region was defined.
-  void getDebugLocation(const Region *R, unsigned &LineBegin, unsigned &LineEnd,
-                        std::string &FileName);
-
-  /// @brief Print the locations of all detected scops.
-  void printLocations();
+  /// @brief Print the locations of all detected scops and scop error messages.
+  void printLocations(llvm::Function &F);
+  
+  /// @brief Prints scop error message and collects scop error stats.
+  /// 
+  /// @param reason The reason for the scop rejection.
+  /// @param message The error message (printed to dbgs() and in the SCoP graph)
+  /// @param Instruction The problematic instruction.
+  void badScop(BadScopReason reason, std::string &message, 
+               Region &R) const;
+  
+  /// @brief Prints scop error message and collects scop error stats.
+  /// 
+  /// @param reason The reason for the scop rejection.
+  /// @param message The error message (printed to dbgs() and in the SCoP graph)
+  /// @param BasicBlock The problematic basic block.
+  void badScop(BadScopReason reason, std::string &message, 
+               BasicBlock &bb) const;
+  
+  /// @brief Prints scop error message and collects scop error stats.
+  /// 
+  /// @param reason The reason for the scop rejection.
+  /// @param message The error message (printed to dbgs() and in the SCoP graph)
+  /// @param Instruction The problematic instruction.
+  void badScop(BadScopReason reason, std::string &message, 
+               Instruction &instruction) const;
 
 public:
   static char ID;
