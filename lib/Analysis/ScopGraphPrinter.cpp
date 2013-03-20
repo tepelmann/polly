@@ -114,10 +114,14 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
 
     return "";
   }
+  
+  static NodeShape::Type getNodeShape() {
+    return NodeShape::none;
+  }
 
   // Gets the start and endline of the basic block in the original source file.
   static void getDebugLocation(BasicBlock *BB, unsigned &LineBegin, unsigned &LineEnd, std::string &FileName, std::string &Dir) {
-    LineBegin = -1;
+    LineBegin = std::numeric_limits<unsigned int>::max();
     LineEnd = 0;
     for (BasicBlock::iterator BI = BB->begin(), BE = BB->end(); BI != BE; ++BI) {
       DebugLoc DL = BI->getDebugLoc();
@@ -183,8 +187,40 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
     }
     return 0.0;
   }
+  
+  /// \brief Returns the percentage of runtime that is spend in this line of 
+  /// code in relation to the function the line belongs to (the percentages 
+  /// of all lines of the function summed up equals approx. 100).
+  static float getLineProfilingPrecentage(std::string& filePathProfilingData, std::string& fileName, unsigned lineNo) {
+    std::ifstream ProfilingData(filePathProfilingData.c_str());
+    if (ProfilingData.is_open())
+    {
+      float percentCodeLine;
+      std::stringstream searchPattern;
+      searchPattern << fileName << " " << lineNo;
+      std::string line;
+      size_t foundIdx = std::string::npos;
+      getline(ProfilingData, line);
+      do
+      {
+        foundIdx = line.find(searchPattern.str());
+      }while(foundIdx == std::string::npos && getline(ProfilingData, line));
+      if (foundIdx != std::string::npos)
+      {
+        std::stringstream ssLine(line);
+        ssLine >> percentCodeLine;
+      }
+      ProfilingData.clear();
+      ProfilingData.seekg(0);
+      return percentCodeLine;
+    }
+    return 0.0;
+  }
 
   std::string getNodeLabel(RegionNode *Node, ScopDetection *SD) {
+    bool foundCodePos = true;
+    std::string cellBegin = HTML_NODE_CELL_BEGIN;
+    std::string cellEnd   = HTML_NODE_CELL_END;
     std::stringstream label;
     bool Profiling = ScopsShowProfilingData.hasArgStr();
     if (ScopsShowSource)
@@ -193,31 +229,39 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
         unsigned begin, end;
         std::stringstream filePathSrc, filePathProfilingData;
         getDebugLocation(Node->getEntry(), begin, end, fileName, dir);
+        foundCodePos = begin != std::numeric_limits<unsigned int>::max();
 
         if (Profiling)
         {
-            //filePathProfilingData << ScopsShowProfilingData; // "/home/jan/Dropbox/diplomarbeit/algo1-isaft/Implementierung/perfAnnotatedSummery.txt";
-            if (begin != -1)
+            if (begin != 0)
             {
                 float percentage = getNodeProfilingPercentage(ScopsShowProfilingData, fileName, begin, end);
                 if (percentage > 0) {
+                    label << cellBegin;
                     label << percentage;
-                    label << "\\|";
+                    label << cellEnd;
                 }
             }
         }
 
-        if (ScopsShowSource)
+        if (ScopsShowSource && foundCodePos)
         {
+            std::string tableBegin = "\\<TABLE BORDER=\\\"0\\\" "
+                              "CELLBORDER=\\\"0\\\" CELLPADDING=\\\"0\\\"\\>";
+            std::string tableEnd   = "\\</TABLE\\>";
+            label << cellBegin << tableBegin;
             filePathSrc << dir << "/" << fileName;
-            if (begin == -1) label << "source file not found! \n";
+            if (begin == 0) label << "source file not found! \n";
             std::ifstream SourceFile(filePathSrc.str().c_str());
             if (SourceFile.is_open()) {
                 gotoFileLine(SourceFile, begin);
-                for (int i=begin; i<=end; i++){
+                for (int lineNo=begin; lineNo<=end; lineNo++){
                     std::string line;
+                    float percentage = getLineProfilingPrecentage(ScopsShowProfilingData, fileName, lineNo);
                     getline(SourceFile, line);
-                    label << (line) << "\\\l";
+                    label << "\\<TR\\>\\<TD ALIGN=\\\"LEFT\\\"";
+                    if (percentage > 0.0) label << " BGCOLOR=\\\"0 " << (percentage / 100) << " 1\\\"";
+                    label << "\\>" << (line) << "\\</TD\\>\\</TR\\>";
                 }
                 SourceFile.close();
             }else{
@@ -225,33 +269,16 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
             }
 
             // place a horizontal line between the original source code and the llvm-ir
-            label << "\\|";
+            label << tableEnd << cellEnd;
         }
     }
-    label << DOTGraphTraits<RegionNode*>::getNodeLabel(Node, SD->getRI()->getTopLevelRegion());
+    label << cellBegin;
+    label << convertRecordLabelNewlines(DOTGraphTraits<RegionNode*>::
+                         getNodeLabel(Node, SD->getRI()->getTopLevelRegion()));
+    label << cellEnd;
     return label.str();
   }
-
-  static std::string getNodeAttributes(RegionNode *Node, ScopDetection *SD){
-    std::stringstream attr;
-    bool Profiling = ScopsShowProfilingData.hasArgStr();
-    if (Profiling)
-    {
-        std::string fileName, dir;
-        unsigned begin, end;
-        std::stringstream filePathProfilingData;
-        getDebugLocation(Node->getEntry(), begin, end, fileName, dir);
-        //filePathProfilingData << ScopsShowProfilingData;//"/home/jan/Dropbox/diplomarbeit/algo1-isaft/Implementierung/perfAnnotatedSummery.txt";
-        if (begin != -1)
-        {
-            float percentage = getNodeProfilingPercentage(ScopsShowProfilingData, fileName, begin, end);
-            attr << "fillcolor=\"" << "0 " << (percentage / 100) << " 1\"";
-            return attr.str();
-        }
-    }
-    return "fillcolor=white";
-  }
-
+  
   static std::string escapeString(std::string String) {
     std::string Escaped;
 
@@ -264,6 +291,16 @@ struct DOTGraphTraits<ScopDetection*> : public DOTGraphTraits<RegionNode*> {
       Escaped += *SI;
     }
     return Escaped;
+  }
+  
+  /// \brief Convert \l to \n.
+  static std::string convertRecordLabelNewlines(std::string Str) {
+    for (unsigned i = 0; i < Str.length(); i++) {
+      if (Str[i] == '\\' && (i+1) < Str.length() && Str[i+1] == 'l') {
+        Str.replace(i, 2, "\n");
+      }
+    }
+    return Str;
   }
 
   // Print the cluster of the subregions. This groups the single basic blocks
